@@ -62,12 +62,14 @@ resource "aws_security_group" "sg_automation" {
 
 # 3. Instância EC2
 resource "aws_instance" "vm" {
-  ami           = "ami-0c7217cdde317cfec" # Ubuntu 22.04 LTS (Verifique a ID na sua região)
-  instance_type = "t3.micro"
-  subnet_id     = aws_subnet.subnet.id
-  vpc_security_group_ids = [aws_security_group.sg_automation.id]
+  ami           = "ami-0c7217cdde317cfec" # Verifique se esta AMI Ubuntu é válida na sua região
+  instance_type = "t3.micro"            # t3.micro é geralmente a opção Free Tier atual
+  
+  subnet_id                   = aws_subnet.subnet.id
+  vpc_security_group_ids      = [aws_security_group.sg_automation.id]
+  associate_public_ip_address = true
 
-  # Para simplificar o Ansible com senha (como no seu lab original):
+  # CONFIGURAÇÃO PARA ANSIBLE COM SENHA (IGUAL AO LAB AZURE)
   user_data = <<-EOF
               #!/bin/bash
               echo "ubuntu:${var.admin_password}" | chpasswd
@@ -75,5 +77,5 @@ resource "aws_instance" "vm" {
               systemctl restart sshd
               EOF
 
-  tags = { Name = "vm-automation" }
+  tags = { Name = "vm-automation-git-terraform-ansible" }
 }

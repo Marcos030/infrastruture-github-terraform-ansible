@@ -1,4 +1,3 @@
-# deploy.yml
 name: Deploy Terraform to AWS
 
 on:
@@ -9,39 +8,154 @@ on:
         required: true
         default: 'false'
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
-  deploy:
+  validate:
+    if: ${{ github.event.inputs.destroy == 'false' }}
+    name: 🔎 Validar Terraform
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout do código
         uses: actions/checkout@v3
 
-      - name: Configure AWS Credentials
+      - name: Configurar Credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1 # Altere se necessário
+
+      - name: Instalar Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Validar Sintaxe e Plano
+        working-directory: infra
+        run: |
+          terraform init
+          terraform fmt -check
+          terraform validate
+          terraform plan -out=tfplan
+
+  deploy:
+    if: ${{ github.event.inputs.destroy == 'false' }}
+    name: 🚀 Deploy e Configuração
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      instanceId: ${{ steps.output_aws.outputs.instance_id }}
+      publicIP: ${{ steps.output_aws.outputs.public_ip }}
+      sgId: ${{ steps.output_aws.outputs.sg_id }}
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v3
+
+      - name: Configurar Credenciais AWS
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: Setup Terraform
+      - name: Instalar Terraform
         uses: hashicorp/setup-terraform@v3
 
-      - name: Terraform Action
-        id: tf
+      - name: Aplicar Terraform
         working-directory: infra
         run: |
           terraform init
-          if [ "${{ github.event.inputs.destroy }}" == "true" ]; then
-            terraform destroy -auto-approve
+          terraform apply -auto-approve
+
+      - name: Capturar Outputs
+        id: output_aws
+        working-directory: infra
+        run: |
+          echo "instance_id=$(terraform output -raw instance_id)" >> $GITHUB_OUTPUT
+          echo "public_ip=$(terraform output -raw public_ip_address)" >> $GITHUB_OUTPUT
+          # sg_id é opcional caso queira testar regras depois
+          echo "sg_id=$(aws ec2 describe-instances --instance-ids $(terraform output -raw instance_id) --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' --output text)" >> $GITHUB_OUTPUT
+
+      - name: Instalar Ansible e sshpass
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ansible sshpass
+
+      - name: Criar Inventário Ansible
+        run: |
+          # Na AWS Ubuntu, o usuário padrão é 'ubuntu' e não 'azureuser'
+          echo "[vm]" > inventory
+          echo "${{ steps.output_aws.outputs.public_ip }} ansible_user=ubuntu ansible_password=${{ secrets.ADMIN_PASSWORD }} ansible_ssh_common_args='-o StrictHostKeyChecking=no'" >> inventory
+
+      - name: Executar Playbook Ansible
+        run: |
+          # Aguarda o User Data do Terraform configurar a senha SSH na AWS
+          echo "Aguardando inicialização da instância..."
+          sleep 30
+          ansible-playbook -i inventory ansible/playbook.yml --extra-vars "ansible_sudo_pass=${{ secrets.ADMIN_PASSWORD }}"
+
+  post-tests:
+    if: ${{ github.event.inputs.destroy == 'false' }}
+    name: ✅ Pós-Testes de Infra
+    needs: deploy
+    runs-on: ubuntu-latest
+    env:
+      PUBLIC_IP: ${{ needs.deploy.outputs.publicIP }}
+      INSTANCE_ID: ${{ needs.deploy.outputs.instanceId }}
+    steps:
+      - name: Configurar Credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Testar Swagger na Porta 8081
+        run: |
+          echo "Aguardando aplicação subir..."
+          sleep 30
+          response=$(curl -s -o /dev/null -w "%{http_code}" http://$PUBLIC_IP:8081/swagger-ui/index.html)
+          if [ "$response" != "200" ]; then
+            echo "❌ Swagger não respondeu. Status: $response"
+            exit 1
           else
-            terraform apply -auto-approve
-            echo "public_ip=$(terraform output -raw public_ip_address)" >> $GITHUB_OUTPUT
+            echo "✅ Swagger online!"
           fi
 
-      - name: Run Ansible (apenas se não for destroy)
-        if: github.event.inputs.destroy == 'false'
+      - name: Verificar status da Instância EC2
         run: |
-          sudo apt-get install -y ansible sshpass
-          echo "[vm]" > inventory
-          echo "${{ steps.tf.outputs.public_ip }} ansible_user=ubuntu ansible_password=${{ secrets.ADMIN_PASSWORD }} ansible_ssh_common_args='-o StrictHostKeyChecking=no'" >> inventory
-          ansible-playbook -i inventory ansible/playbook.yml --extra-vars "ansible_sudo_pass=${{ secrets.ADMIN_PASSWORD }}"
+          status=$(aws ec2 describe-instance-status \
+            --instance-ids "$INSTANCE_ID" \
+            --query "InstanceStatuses[0].InstanceState.Name" \
+            --output text)
+          
+          echo "Status: $status"
+          if [ "$status" != "running" ]; then
+            echo "❌ EC2 não está rodando!"
+            exit 1
+          fi
+
+  destroy:
+    if: ${{ github.event.inputs.destroy == 'true' }}
+    name: 🧨 Destruir Infraestrutura
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v3
+
+      - name: Configurar Credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Instalar Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Executar Terraform Destroy
+        working-directory: infra
+        run: |
+          terraform init
+          terraform destroy -auto-approve
