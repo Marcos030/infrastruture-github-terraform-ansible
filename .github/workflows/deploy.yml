@@ -1,0 +1,47 @@
+# deploy.yml
+name: Deploy Terraform to AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      destroy:
+        description: 'Destruir infraestrutura?'
+        required: true
+        default: 'false'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Action
+        id: tf
+        working-directory: infra
+        run: |
+          terraform init
+          if [ "${{ github.event.inputs.destroy }}" == "true" ]; then
+            terraform destroy -auto-approve
+          else
+            terraform apply -auto-approve
+            echo "public_ip=$(terraform output -raw public_ip_address)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Ansible (apenas se não for destroy)
+        if: github.event.inputs.destroy == 'false'
+        run: |
+          sudo apt-get install -y ansible sshpass
+          echo "[vm]" > inventory
+          echo "${{ steps.tf.outputs.public_ip }} ansible_user=ubuntu ansible_password=${{ secrets.ADMIN_PASSWORD }} ansible_ssh_common_args='-o StrictHostKeyChecking=no'" >> inventory
+          ansible-playbook -i inventory ansible/playbook.yml --extra-vars "ansible_sudo_pass=${{ secrets.ADMIN_PASSWORD }}"
