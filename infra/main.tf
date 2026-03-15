@@ -77,5 +77,5 @@ resource "aws_instance" "vm" {
               systemctl restart sshd
               EOF
 
-  tags = { Name = "vm-automation-git-terraform-ansible" }
+  tags = { Name = "vm-automation" }
 }
