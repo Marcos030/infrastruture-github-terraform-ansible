@@ -63,7 +63,7 @@ resource "aws_security_group" "sg_automation" {
 # 3. Instância EC2
 resource "aws_instance" "vm" {
   ami           = "ami-0c7217cdde317cfec" # Ubuntu 22.04 LTS (Verifique a ID na sua região)
-  instance_type = "t2.micro"
+  instance_type = "t3.micro"
   subnet_id     = aws_subnet.subnet.id
   vpc_security_group_ids = [aws_security_group.sg_automation.id]
 
