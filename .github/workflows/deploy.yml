@@ -136,7 +136,7 @@ jobs:
             exit 1
           fi
 
-  destroy:
+destroy:
     if: ${{ github.event.inputs.destroy == 'true' }}
     name: 🧨 Destruir Infraestrutura
     runs-on: ubuntu-latest
@@ -158,4 +158,5 @@ jobs:
         working-directory: infra
         run: |
           terraform init
+          # Se você não usar backend remoto, o comando abaixo não encontrará nada para destruir
           terraform destroy -auto-approve
